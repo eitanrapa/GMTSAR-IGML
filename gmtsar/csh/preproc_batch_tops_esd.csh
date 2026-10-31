@@ -186,6 +186,12 @@
           # get r, dr, a, da, SNR table to be used by fitoffset.csh
           paste tmpm.dat tmp1.dat | awk '{printf("%.6f %.6f %.6f %.6f %d\n", $1, $6 - $1, $2, $7 - $2, "100")}' > tmp.dat
           set rmax = `grep num_rng_bins $stem.PRM | awk '{print $3}'`
+          # IGML A3 (2026-10-31): the shift tables span the super-master's width where it is the larger, so a
+          # date narrower than it keeps its far-range columns (make_s1a_tops writes at the tables' width)
+          if ($?IGML_A3) then
+            set rmaxm = `grep num_rng_bins tmp.PRM | awk '{print $3}'`
+            if ($rmaxm > $rmax) set rmax = $rmaxm
+          endif
           set amax = `grep num_lines $stem.PRM | awk '{print $3}'`
           awk '{if($1 > 0 && $1 < '$rmax' && $3 > 0 && $3 < '$amax') print $0 }' < tmp.dat > offset.dat
          

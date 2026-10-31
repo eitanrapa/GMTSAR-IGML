@@ -43,6 +43,8 @@
 
 /* IGML A1 (2026-10-30): the output stem, for <stem>.cuts */
 char IGML_STEM[256] = "";
+/* IGML A3 (2026-10-31): the width a resampled date is written at, when wider than its tiff (else 0) */
+int IGML_W = 0;
 
 #define max(a, b) (((a) > (b)) ? (a) : (b))
 
@@ -216,7 +218,8 @@ int main(int argc, char **argv) {
 		search_tree(xml_tree, "/product/imageAnnotation/imageInformation/azimuthTimeInterval/", tmp_str, 1, 0, 1);
 		dta = str2double(tmp_str);
 		search_tree(xml_tree, "/product/imageAnnotation/imageInformation/numberOfSamples/", tmp_str, 1, 0, 1);
-		fprintf(BB, "%d %d %.6f %.12f\n", nc, (int)str2double(tmp_str) - (int)str2double(tmp_str) % 4, spec_sep, dta);
+		fprintf(BB, "%d %d %.6f %.12f\n", nc,
+		        IGML_W > 0 ? IGML_W : (int)str2double(tmp_str) - (int)str2double(tmp_str) % 4, spec_sep, dta); /* IGML A3 */
 		for (n = 1; n <= nc; n++) {
 			fprintf(BB, "%d %d %d %d %d %d\n", bb[n].SL, bb[n].SC, bb[n].SH, bb[n].EL, bb[n].EC, bb[n].EH);
 		}
@@ -754,6 +757,22 @@ double shift_write_slc(void *API, struct PRM *prm, struct tree *xml_tree, struct
 	TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &height);
 	width = widthi - widthi % 4;
 	width2 = 2 * width;
+	/* IGML A3 (2026-10-31): a resampled date is written at the shift tables' width where that is the larger
+	   (preproc's rmax: the super-master's width with IGML_A3), its tiff's lines zero-padded */
+	int width_in = width;
+	if (getenv("IGML_A3") != NULL && dr_table[0] != '\0' && da_table[0] != '\0') {
+		int wt = (int)floor(R->header->wesn[GMT_XHI] + 0.5);
+		wt -= wt % 4;
+		if (wt > width) {
+			fprintf(stderr, "IGML A3: written %d samples wide (its own %d)\n", wt, width);
+			width = wt;
+			width2 = 2 * width;
+			IGML_W = width;
+			prm->num_rng_bins = width;
+			prm->bytes_per_line = 4 * width;
+			prm->good_bytes = prm->bytes_per_line;
+		}
+	}
 
 	if (nlf != height) {
 		fprintf(stderr, "XML and TIFF file disagree on image height %d %d \n", nlf, height);
@@ -832,7 +851,7 @@ double shift_write_slc(void *API, struct PRM *prm, struct tree *xml_tree, struct
 			TIFFReadScanline(tif, buf, it, s);
 			for (jj = 0; jj < width2; jj++) {
 				k = ii * width2 + jj;
-				brst[k] = (short)buf[jj];
+				brst[k] = jj < 2 * width_in ? (short)buf[jj] : 0; /* IGML A3: zero beyond the tiff */
 			}
 			it++;
 		}
@@ -1050,6 +1069,8 @@ int compute_eap(fcomplex *cramp, tree *xml_tree, int nb) {
 	search_tree(xml_tree, "/product/imageAnnotation/imageInformation/numberOfSamples/", tmp_str, 1, 0, 1);
 	n_samples = (int)str2double(tmp_str);
 	n_samples = n_samples - n_samples % 4;
+	if (IGML_W > 0)
+		n_samples = IGML_W; /* IGML A3: the width the resampled date is written at */
 	search_tree(xml_tree, "/product/generalAnnotation/productInformation/rangeSamplingRate/", tmp_str, 1, 0, 1);
 	fs = str2double(tmp_str);
 	search_tree(xml_tree, "/product/swathTiming/linesPerBurst/", tmp_str, 1, 4, 0);
