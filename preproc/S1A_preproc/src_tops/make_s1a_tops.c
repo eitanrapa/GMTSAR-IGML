@@ -39,6 +39,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <glob.h>
+
+/* IGML A1 (2026-10-30): the output stem, for <stem>.cuts */
+char IGML_STEM[256] = "";
 
 #define max(a, b) (((a) > (b)) ? (a) : (b))
 
@@ -54,6 +58,7 @@ typedef struct burst_bounds {
 int pop_led(struct tree *, struct state_vector *);
 int write_orb(struct state_vector *sv, FILE *fp, int);
 int pop_burst(struct PRM *, struct tree *, struct burst_bounds *, char *, char *);
+void igml_a1_snap(struct burst_bounds *, int, int *, int *);
 double dramp_dmod(struct tree *, int, fcomplex *, int, int, int, struct GMT_GRID *, struct GMT_GRID *, int, int);
 double shift_write_slc(void *, struct PRM *, struct tree *, burst_bounds *, int, TIFF *, FILE *, FILE *, FILE *, FILE *, char *, char *);
 int shift_burst(fcomplex *, fcomplex *, int, int, int, struct GMT_GRID *, struct GMT_GRID *, int);
@@ -116,6 +121,7 @@ int main(int argc, char **argv) {
 	}
 
 	null_MEM_STR();
+	strncpy(IGML_STEM, argv[3], 255); /* IGML A1 */
 	imode = atoi(argv[4]);
 
 	// find the number of lines and the maximum line length of the xml file
@@ -799,6 +805,19 @@ double shift_write_slc(void *API, struct PRM *prm, struct tree *xml_tree, struct
 		}
 		cl = 0;
 	}
+	/* IGML A1 (2026-10-30): c_own[k] = the first output line of burst k as GMTSAR places it (the date's own cuts),
+	   o_start[k] = where it is written from (the super-master's cut when IGML_A1 moves it; see patch_a1.py) */
+	int a1 = getenv("IGML_A1") != NULL && (imode == 1 || imode == 3);
+	int *c_own = (int *)malloc((count + 2) * sizeof(int));
+	int *o_start = (int *)malloc((count + 2) * sizeof(int));
+	c_own[1] = 0;
+	for (kk = 1; kk <= count; kk++)
+		c_own[kk + 1] = c_own[kk] + (bb[kk].EC - bb[kk].SC + 1);
+	for (kk = 1; kk <= count + 1; kk++)
+		o_start[kk] = c_own[kk];
+	if (a1 && dr_table[0] != '\0' && da_table[0] != '\0')
+		igml_a1_snap(bb, count, c_own, o_start);
+
 	fprintf(stderr, "Working on burst ");
 	// loop over the bursts
 	for (kk = 1; kk <= count; kk++) {
@@ -831,7 +850,7 @@ double shift_write_slc(void *API, struct PRM *prm, struct tree *xml_tree, struct
 		// do not shift anything if dr and da is not given
 		if (dr_table[0] != '\0' && da_table[0] != '\0') {
 			// complute the complex deramp_demod array for each burst with no shift
-			al_start = cl - bb[kk].SC;
+			al_start = c_own[kk] - bb[kk].SC; /* IGML A1: = cl - SC as before; the date's own placement */
 
 			// generate the dramp_dmod
 			dramp_dmod(xml_tree, kk, cramp, lpb, width, al_start, R, A, bshift, 0);
@@ -950,7 +969,7 @@ double shift_write_slc(void *API, struct PRM *prm, struct tree *xml_tree, struct
 			}
 
 			// write center
-			if (ii >= bb[kk].SC && ii <= bb[kk].EC) {
+			if (ii >= bb[kk].SC + o_start[kk] - c_own[kk] && ii <= bb[kk].EC + o_start[kk + 1] - c_own[kk + 1]) {
 				for (jj = 0; jj < width2; jj++) {
 					k = ii * width2 + jj;
 					tmp[jj] = brst[k];
@@ -960,7 +979,7 @@ double shift_write_slc(void *API, struct PRM *prm, struct tree *xml_tree, struct
 				cl++;
 			}
             if (imode == 3) {
-                if (ii >= bb[kk].SC && ii <= bb[kk].EC) {
+                if (ii >= bb[kk].SC + o_start[kk] - c_own[kk] && ii <= bb[kk].EC + o_start[kk + 1] - c_own[kk + 1]) {
                     for (jj = 0; jj < width; jj++) {
                         k = ii * width + jj;
                         rtmp[jj] = prmp[k];
@@ -981,6 +1000,20 @@ double shift_write_slc(void *API, struct PRM *prm, struct tree *xml_tree, struct
 		}
 	}
 	fprintf(stderr, "\n");
+
+	/* IGML A1: the super-master's frames (no shift tables) record their cut times */
+	if (a1 && dr_table[0] == '\0' && imode == 1 && IGML_STEM[0] != '\0') {
+		char fn[300];
+		FILE *fc;
+		snprintf(fn, sizeof(fn), "%s.cuts", IGML_STEM);
+		if ((fc = fopen(fn, "w")) != NULL) {
+			for (kk = 2; kk <= count; kk++)
+				fprintf(fc, "%.12f\n", prm->clock_start + (double)c_own[kk] / prm->prf / 86400.0);
+			fclose(fc);
+		}
+	}
+	free(c_own);
+	free(o_start);
 
 	if (imode == 2) {
 		search_tree(xml_tree, "/product/imageAnnotation/imageInformation/azimuthTimeInterval/", tmp_c, 1, 0, 1);
@@ -1372,4 +1405,63 @@ int get_words(char *buffer) { // Function that gets the word count, by counting
 	}
 	//    printf("%d\n\n", wordcount);
 	return wordcount + 1;
+}
+
+/* IGML A1 (2026-10-30): each interior cut c_own[k] (k = 2 .. count) moved to the nearest super-master cut, placed on
+   this frame's output lines through ./tmp.PRM (clock_start, PRF), when burst k holds the lines before its SC (a cut
+   moved earlier) or burst k - 1 the lines after its EC (moved later) that the move takes, with 2 lines to spare and at
+   most 30 lines; otherwise the cut stays where GMTSAR puts it. */
+void igml_a1_snap(struct burst_bounds *bb, int count, int *c_own, int *o_start) {
+	FILE *f;
+	char line[512], key[128];
+	double v, t0 = -1.0, prf = 0.0, t, m[8192], bd, d;
+	int nm = 0, k, j, dl, room;
+	glob_t g;
+
+	if ((f = fopen("tmp.PRM", "r")) == NULL) {
+		fprintf(stderr, "IGML A1: no tmp.PRM -- every cut left as GMTSAR puts it\n");
+		return;
+	}
+	while (fgets(line, sizeof(line), f) != NULL)
+		if (sscanf(line, " %127s = %lf", key, &v) == 2) {
+			if (strcmp(key, "clock_start") == 0)
+				t0 = v;
+			else if (strcmp(key, "PRF") == 0)
+				prf = v;
+		}
+	fclose(f);
+	if (t0 < 0.0 || prf <= 0.0) {
+		fprintf(stderr, "IGML A1: tmp.PRM has no clock_start / PRF -- every cut left as GMTSAR puts it\n");
+		return;
+	}
+	if (glob("*.cuts", 0, NULL, &g) != 0) {
+		fprintf(stderr, "IGML A1: no super-master cuts (*.cuts) -- every cut left as GMTSAR puts it\n");
+		return;
+	}
+	for (j = 0; j < (int)g.gl_pathc; j++) {
+		if ((f = fopen(g.gl_pathv[j], "r")) == NULL)
+			continue;
+		while (nm < 8192 && fscanf(f, "%lf", &t) == 1)
+			m[nm++] = (t - t0) * 86400.0 * prf;
+		fclose(f);
+	}
+	globfree(&g);
+	for (k = 2; k <= count; k++) {
+		bd = 1.0e9;
+		for (j = 0; j < nm; j++) {
+			d = m[j] - (double)c_own[k];
+			if (fabs(d) < fabs(bd))
+				bd = d;
+		}
+		dl = (int)floor(bd + 0.5);
+		room = dl < 0 ? bb[k].SC - bb[k].SL : bb[k - 1].EH - bb[k - 1].EC;
+		if (fabs(bd) <= 30.0 && abs(dl) <= room - 2) {
+			o_start[k] = c_own[k] + dl;
+			fprintf(stderr, "IGML A1: cut %d at line %d -> %d (%+d; super-master cut %+.3f)\n", k, c_own[k], o_start[k], dl,
+			        bd);
+		}
+		else
+			fprintf(stderr, "IGML A1: cut %d kept at line %d (nearest super-master cut %+.1f lines, room %d)\n", k,
+			        c_own[k], bd, room);
+	}
 }
