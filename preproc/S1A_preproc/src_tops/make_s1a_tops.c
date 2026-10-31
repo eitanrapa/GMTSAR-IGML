@@ -1011,6 +1011,7 @@ int compute_eap(fcomplex *cramp, tree *xml_tree, int nb) {
 	double fs, dta, tau0, *tau_sub, *theta_sub, anx_time, *tau;
 	double *Geap, dtheta, t_brst, t1 = 0, t2, theta_offnadir, *theta_eap, height, *theta, *p_corr;
 	double H[5], Torb, Worb, phi[5], real, imag;
+	char eap_swath[8], eap_pol[4];
 
 	// get some of the parameters needed for computation
 	search_tree(xml_tree, "/product/imageAnnotation/imageInformation/numberOfSamples/", tmp_str, 1, 0, 1);
@@ -1069,8 +1070,13 @@ int compute_eap(fcomplex *cramp, tree *xml_tree, int nb) {
 
 	// determine which antenna pattern to read in in the aux file
 	mode = 0;
-	search_tree(xml_tree, "/product/adsHeader/imageNumber/", tmp_str, 1, 0, 1);
-	ii = (int)str2double(tmp_str);
+	/* IGML 2026-10-29: by swath, not imageNumber (a 1SDV product numbers its VV annotations 4-6) */
+	search_tree(xml_tree, "/product/adsHeader/swath/", tmp_str, 1, 0, 1);
+	if (strncmp(tmp_str, "IW", 2) != 0 || tmp_str[2] < '1' || tmp_str[2] > '3')
+		die("compute_eap: not an IW swath: ", tmp_str);
+	ii = tmp_str[2] - '0';
+	strncpy(eap_swath, tmp_str, 3);
+	eap_swath[3] = '\0';
 	mode = mode + (ii - 1) * 4;
 	search_tree(xml_tree, "/product/adsHeader/polarisation/", tmp_str, 1, 0, 1);
 	if (tmp_str[0] - 'H' == 0 && tmp_str[1] - 'H' == 0)
@@ -1082,6 +1088,16 @@ int compute_eap(fcomplex *cramp, tree *xml_tree, int nb) {
 	else if (tmp_str[0] - 'V' == 0 && tmp_str[1] - 'H' == 0)
 		mode = mode + 4;
 	mode = mode + 24;
+	strncpy(eap_pol, tmp_str, 2);
+	eap_pol[2] = '\0';
+	/* IGML: the aux entry must be this swath and polarisation */
+	search_tree(xml_tree, "/auxiliaryCalibration/calibrationParamsList/calibrationParams/swath/", tmp_str, 1, 3, mode);
+	if (strncmp(tmp_str, eap_swath, 3) != 0)
+		die("compute_eap: aux pattern is not for swath ", eap_swath);
+	search_tree(xml_tree, "/auxiliaryCalibration/calibrationParamsList/calibrationParams/polarisation/", tmp_str, 1, 3, mode);
+	if (strncmp(tmp_str, eap_pol, 2) != 0)
+		die("compute_eap: aux pattern is not for polarisation ", eap_pol);
+	fprintf(stderr, "(EAP %s %s, aux pattern %d)", eap_swath, eap_pol, mode);
 	// printf("Reading in antenna pattern %d (%s IW%d)...\n",mode,tmp_str,ii);
 
 	// read in parameters from aux xml
@@ -1135,43 +1151,44 @@ int compute_eap(fcomplex *cramp, tree *xml_tree, int nb) {
 
 	// compute the elevation antenna pattern
 	for (ii = 0; ii < n_samples; ii++)
-		tau[ii] = tau0 + (double)(ii - 1) / fs;
+		tau[ii] = tau0 + (double)ii / fs; /* IGML: sample ii is at tau0 + ii / fs */
 	jj = 0;
 	// printf("%f,%f,%f,%f\n",t_brst-anx_time,dtheta,height,theta_offnadir);
-	while (tau_sub[jj] < tau0)
+	while (jj < srtcount && tau_sub[jj] < tau0)
 		jj++;
 	for (ii = 0; ii < n_samples; ii++) {
-		while (tau_sub[jj] < tau[ii])
+		while (jj < srtcount && tau_sub[jj] < tau[ii])
 			jj++;
-		if (jj < 1 || jj > srtcount) {
+		if (jj < 1 || jj >= srtcount) {
 			// fprintf(stderr,"\ntheta: %d %d %e %e
 			// %d\n",jj,srtcount,tau0,tau[ii],ii); die("elevationAngle table size not
 			// match slantRangeTime table size","");
 			theta[ii] = 0.0;
 		}
 		else {
-			theta[ii] = ((tau[ii] - tau_sub[jj - 1]) * theta_sub[jj - 1] + (tau_sub[jj] - tau[ii]) * theta_sub[jj]) /
+			theta[ii] = ((tau_sub[jj] - tau[ii]) * theta_sub[jj - 1] + (tau[ii] - tau_sub[jj - 1]) * theta_sub[jj]) /
 			            (tau_sub[jj] - tau_sub[jj - 1]);
 		}
 	}
 	// printf("%d  ",jj);
 
 	jj = 0;
-	while (theta_eap[jj] < theta[0])
+	while (jj < n && theta_eap[jj] < theta[0])
 		jj++;
 	// printf("%d  ",jj);
 	for (ii = 0; ii < n_samples; ii++) {
-		while (theta_eap[jj] < theta[ii])
+		while (jj < n && theta_eap[jj] < theta[ii])
 			jj++;
-		if (jj < 1 || jj > srtcount) {
+		if (jj < 1 || jj >= n) { /* IGML: the EAP table is n long (was checked against srtcount) */
 			// fprintf(stderr,"p_corr: %d %d",jj,srtcount);
 			// die("elevationAngle table size not match slantRangeTime table
 			// size","");
 			p_corr[ii] = 0.0;
 		}
 		else {
-			real = (Geap[(jj - 1) * 2] * (theta[ii] - theta_eap[jj - 1]) + Geap[jj * 2] * (theta_eap[jj] - theta[ii])) / dtheta;
-			imag = (Geap[(jj - 1) * 2 + 1] * (theta[ii] - theta_eap[jj - 1]) + Geap[jj * 2 + 1] * (theta_eap[jj] - theta[ii])) /
+			/* IGML: weights were swapped */
+			real = (Geap[(jj - 1) * 2] * (theta_eap[jj] - theta[ii]) + Geap[jj * 2] * (theta[ii] - theta_eap[jj - 1])) / dtheta;
+			imag = (Geap[(jj - 1) * 2 + 1] * (theta_eap[jj] - theta[ii]) + Geap[jj * 2 + 1] * (theta[ii] - theta_eap[jj - 1])) /
 			       dtheta;
 			p_corr[ii] = atan2(imag, real);
 		}
