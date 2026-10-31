@@ -107,8 +107,17 @@
         # get images aligned
         if($sl == 1) then
           # sl=1 means processing the super_master image, simpley generate images and stitch them together
-          make_s1a_tops $file.xml $file.tiff $stem 1
-          make_s1a_tops $file.xml $file.tiff $stem 2
+          # IGML NESD (2026-10-31): a collecting run writes the overlap images before the image (mode 1's PRM /
+          # LED are then the ones kept, as in preproc_batch_tops.csh); a run with network shifts needs none
+          if ($?IGML_ESD_COLLECT) then
+            make_s1a_tops $file.xml $file.tiff $stem 2
+            make_s1a_tops $file.xml $file.tiff $stem 1
+          else if ($?IGML_ESD_SHIFTS) then
+            make_s1a_tops $file.xml $file.tiff $stem 1
+          else
+            make_s1a_tops $file.xml $file.tiff $stem 1
+            make_s1a_tops $file.xml $file.tiff $stem 2
+          endif
           ext_orb_s1a $stem.PRM $orbit $stem
           echo $stem >> masterlist
           echo $stem >> tmp.stitchlist
@@ -213,6 +222,19 @@
           gmt grdmath rtmp.grd FLIPUD = r.grd
           gmt grdmath atmp.grd FLIPUD = a.grd          
 
+          # IGML NESD (2026-10-31): the network's shift for this frame instead of the estimate against the
+          # super-master
+          if ($?IGML_ESD_SHIFTS) then
+            set res_shift = `awk '$1 == "'$stem'" {print $2; exit}' $IGML_ESD_SHIFTS`
+            if ("$res_shift" == "") then
+              echo "IGML NESD: no network shift for $stem in $IGML_ESD_SHIFTS"
+              exit 1
+            endif
+            echo "IGML NESD: updating azimuth shift of $stem with the network's constant ($res_shift)"
+            gmt grdmath a.grd $res_shift ADD = tmp.grd
+            mv tmp.grd a.grd
+          else
+          if ($?IGML_ESD_COLLECT) echo "$stem $tmp_master $tmp_da" >> nesd_frames.txt
           # generate the image with point-by-point shifts
           make_s1a_tops $file.xml $file.tiff $stem 2 r.grd a.grd
 
@@ -246,9 +268,17 @@
             else
               set res_shift = `grep residual_shift tmp | awk '{print $3}'`
             endif
+            if ($?IGML_ESD_COLLECT) then
+              # IGML NESD: recorded for the network (its fallback), not applied
+              cp tmp $stem.sd
+              echo "esd${esd}_shift = $res_shift" >> $stem.sd
+              echo "IGML NESD: $stem against $tmp_master $res_shift (recorded, not applied)"
+            else
             echo "Updating azimuth shift with a constant...(medain $res_shift)"
             gmt grdmath a.grd $res_shift ADD = tmp.grd
             mv tmp.grd a.grd
+            endif
+          endif
           endif
 
           #set res_shift = `sort -n tmp2 | awk ' { a[i++]=$1; } END { print a[int(i/2)]; }' | awk '{print $1/2.0/3.141592653/'$spec_sep'}'`
@@ -341,5 +371,11 @@
   endif
 
   # clean up a little bit
-  if($mode == 2) rm tmp* topo.llt flt.grd atmp* rtmp* *SLCL *SLCH *BB
+  # IGML NESD (2026-10-31): a collecting run keeps the overlap images and boundary files (a run with network
+  # shifts makes none)
+  if ($mode == 2 && ($?IGML_ESD_COLLECT || $?IGML_ESD_SHIFTS)) then
+    rm tmp* topo.llt flt.grd atmp* rtmp*
+  else if ($mode == 2) then
+    rm tmp* topo.llt flt.grd atmp* rtmp* *SLCL *SLCH *BB
+  endif
 
