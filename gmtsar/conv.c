@@ -158,6 +158,10 @@ int main(int argc, char **argv) {
 	void *API = NULL;            /* GMT control structure */
 	struct GMT_GRID *Out = NULL; /* For the output grid */
 	struct GMT_GRID *In = NULL;  /* Grid structure containing ->header and ->data */
+	/* IGML 2026-10-29: filter centre offsets (input index units) and output origin shift (coordinate units) */
+	int di = 0, dj = 0;
+	double x0 = 0.0, y0 = 0.0, xlo_in = 0.0, ylo_in = 0.0;
+	char *ev = NULL;
 
 	if (argc < 6)
 		die("\n", USAGE);
@@ -214,6 +218,8 @@ int main(int argc, char **argv) {
 		ydim = In->header->n_rows;
 		xmax = In->header->wesn[GMT_XHI];
 		ymax = In->header->wesn[GMT_YHI];
+		xlo_in = In->header->wesn[GMT_XLO]; /* IGML: carry the input's origin */
+		ylo_in = In->header->wesn[GMT_YLO];
 		if (verbose)
 			fprintf(stderr, "%d %d \n", In->header->n_columns, In->header->n_rows);
 		format_flag = 1;
@@ -232,6 +238,16 @@ int main(int argc, char **argv) {
 
 	if (verbose)
 		fprintf(stderr, " read file %s %d %d \n", input_name, xdim, ydim);
+	if ((ev = getenv("IGML_CONV_DI")))
+		di = atoi(ev);
+	if ((ev = getenv("IGML_CONV_DJ")))
+		dj = atoi(ev);
+	if ((ev = getenv("IGML_CONV_X0")))
+		x0 = atof(ev);
+	if ((ev = getenv("IGML_CONV_Y0")))
+		y0 = atof(ev);
+	if (di < 0 || dj < 0)
+		die("IGML_CONV_DI / IGML_CONV_DJ must be >= 0", "");
 
 	/* read size of filter and make sure dimensions are odd */
 	if (fscanf(f_filter, "%d%d", &xarr, &yarr) != 2 || xarr < 1 || yarr < 1 || (xarr & 1) == 0 || (yarr & 1) == 0)
@@ -247,16 +263,16 @@ int main(int argc, char **argv) {
 		jout = jout + 1;
 	if (verbose)
 		fprintf(stderr, " original: ydim %d xdim %d new: %d %d decimation: %d %d\n", ydim, xdim, iout, jout, idec, jdec);
-	inc[GMT_X] = round(xmax / (double)jout);
-	inc[GMT_Y] = round(ymax / (double)iout);
-	jout = floor(xmax / inc[GMT_X]);
-	iout = floor(ymax / inc[GMT_Y]);
+	inc[GMT_X] = round((xmax - xlo_in) / (double)jout);
+	inc[GMT_Y] = round((ymax - ylo_in) / (double)iout);
+	jout = floor((xmax - xlo_in) / inc[GMT_X]);
+	iout = floor((ymax - ylo_in) / inc[GMT_Y]);
 	if (verbose)
 		fprintf(stderr, " creating GMT grid %s \n", output_name);
-	wesn[GMT_XLO] = 0.0;
-	wesn[GMT_XHI] = inc[GMT_X] * jout;
-	wesn[GMT_YLO] = 0.0;
-	wesn[GMT_YHI] = inc[GMT_Y] * iout;
+	wesn[GMT_XLO] = xlo_in + x0;
+	wesn[GMT_XHI] = wesn[GMT_XLO] + inc[GMT_X] * jout;
+	wesn[GMT_YLO] = ylo_in + y0;
+	wesn[GMT_YHI] = wesn[GMT_YLO] + inc[GMT_Y] * iout;
 
 	if ((Out = GMT_Create_Data(API, GMT_IS_GRID, GMT_IS_SURFACE, GMT_GRID_ALL, NULL, wesn, inc, GMT_GRID_PIXEL_REG, 0, NULL)) ==
 	    NULL)
@@ -314,7 +330,7 @@ int main(int argc, char **argv) {
 	if (format_flag == 3)
 		read_SLC_float(cfdat, xdim, f_input, 0, buffer, DFACT, ibuff);
 
-	for (ic = 0, row = 0; ic < iout * idec; ic = ic + idec) {
+	for (ic = di, row = 0; ic < di + iout * idec; ic = ic + idec) {
 
 		if (ic / 2000.0 == ic / 1000)
 			if (verbose)
@@ -346,7 +362,7 @@ int main(int argc, char **argv) {
 		ic1 = ic - ic0;
 
 		/* now do the 2d convolution */
-		for (jc = 0; jc < floor(xmax / inc[GMT_X]) * jdec; jc = jc + jdec) {
+		for (jc = dj; jc < dj + floor((xmax - xlo_in) / inc[GMT_X]) * jdec; jc = jc + jdec) {
 			conv2d(buffer, &ylen, &xdim, filter, &yarr, &xarr, &filtdat, &ic1, &jc, &rnorm);
 			/* use a zero or null value if there is not enough data in the filter */
 			Out->data[left_node + jout] = 0.0f;

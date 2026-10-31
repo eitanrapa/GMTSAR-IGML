@@ -347,6 +347,8 @@ int main(int argc, char **argv) {
 	int psize, corrflag, dflag, comflag;
 	float alpha, pcorr, swgt;
 	float *outphase = NULL, *wgt = NULL, *amp = NULL, *corr = NULL, *diff = NULL, *ftmp = NULL;
+	float *wsum = NULL;                 /* IGML 2026-10-29: total patch weight per cell */
+	int *si = NULL, *sj = NULL, nsi = 0, nsj = 0, a, b, s;
 	struct FCOMPLEX *data = NULL, *fdata = NULL, *patch0 = NULL, *patch1 = NULL;
 	char sre[256], sim[256];
 	char amp1[256], amp2[256];
@@ -434,8 +436,25 @@ int main(int argc, char **argv) {
 	/* except at edges...						*/
 	make_wgt(wgt, nxp, nyp);
 
-	for (ii = 0; ii < (ydim - nyp); ii += nyp / 2) {
-		for (jj = 0; jj < (xdim - nxp); jj += nxp / 2) {
+	/* IGML 2026-10-29: patch starts every nyp / 2 as before, plus one aligned with the far edge (the old loop
+	   stopped short of it and left the last 11-16 rows / columns at exactly 0 phase) */
+	if ((wsum = calloc(T->header->nm, sizeof(float))) == NULL)
+		die("error allocating memory", "");
+	if ((si = malloc((ydim / (nyp / 2) + 3) * sizeof(int))) == NULL || (sj = malloc((xdim / (nxp / 2) + 3) * sizeof(int))) == NULL)
+		die("error allocating memory", "");
+	for (s = 0; s < (int)ydim - (int)nyp; s += nyp / 2)
+		si[nsi++] = s;
+	if ((int)ydim >= (int)nyp)
+		si[nsi++] = (int)ydim - (int)nyp;
+	for (s = 0; s < (int)xdim - (int)nxp; s += nxp / 2)
+		sj[nsj++] = s;
+	if ((int)xdim >= (int)nxp)
+		sj[nsj++] = (int)xdim - (int)nxp;
+
+	for (a = 0; a < nsi; a++) {
+		ii = si[a];
+		for (b = 0; b < nsj; b++) {
+			jj = sj[b];
 
 			pcorr = 0.0f;
 			swgt = 0.0f;
@@ -469,13 +488,14 @@ int main(int argc, char **argv) {
 					k2 = i * nxp + j;
 					fdata[k1].r = fdata[k1].r + wgt[k2] * patch1[k2].r;
 					fdata[k1].i = fdata[k1].i + wgt[k2] * patch1[k2].i;
+					wsum[k1] = wsum[k1] + wgt[k2];
 				}
 			}
 		}
 	}
 
 	for (i = 0; i < T->header->nm; i++)
-		outphase[i] = atan2f(fdata[i].i, fdata[i].r);
+		outphase[i] = (wsum[i] > 0.0f) ? atan2f(fdata[i].i, fdata[i].r) : NAN; /* IGML: no patch, no phase */
 
 	write_grdfile(API, T, phasefilt, "phasefilt", "phase", outphase, verbose);
 

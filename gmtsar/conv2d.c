@@ -45,9 +45,9 @@ void conv2d(float *rdat, int *ni, int *nj, float *filt, int *nif, int *njf, floa
 	/*  compute the bounds of the convolution */
 
 	i0 = max(0, *ic - nif2);
-	i1 = min(*ni, *ic + nif2);
+	i1 = min(*ni - 1, *ic + nif2); /* IGML 2026-10-29: was *ni, one past the data */
 	j0 = max(0, *jc - njf2);
-	j1 = min(*nj, *jc + njf2);
+	j1 = min(*nj - 1, *jc + njf2); /* IGML 2026-10-29: was *nj (read the next row) */
 
 	*fdat = 0.0f;
 	*rnorm = 0.0f;

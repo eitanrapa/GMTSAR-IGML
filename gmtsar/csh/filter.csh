@@ -117,23 +117,40 @@ errormessage:
   endif
   echo "$filter2 $idec $jdec ($az_lks $dec_rng)" 
 #
+# IGML 2026-10-29: centre each decimated cell on its block (the second stage, in stage-1 index units) and start
+# this subswath at (IGML_SUB_Y0 lines, IGML_SUB_X0 samples) so its cells fall on the merged grid's (first stage)
+#
+  set igx0 = 0
+  set igy0 = 0
+  if ($?IGML_SUB_X0) set igx0 = $IGML_SUB_X0
+  if ($?IGML_SUB_Y0) set igy0 = $IGML_SUB_Y0
+  @ igci = $idec / 2
+  @ igcj = $jdec / 2
+  if ($az_lks != 1) then
+    echo "IGML filter.csh: az_lks $az_lks != 1 -- cell centring needs a one-line first stage"
+    exit 1
+  endif
+  set st1 = "env IGML_CONV_DI=$igy0 IGML_CONV_DJ=$igx0 IGML_CONV_Y0=$igy0 IGML_CONV_X0=$igx0"
+  set st2 = "env IGML_CONV_DI=$igci IGML_CONV_DJ=$igcj"
+  echo "IGML filter.csh: origin $igy0 lines, $igx0 samples; cell centres +$igci / +$igcj (stage 2)"
+#
 # filter the two amplitude images
 #
   echo "making amplitudes..."
-  conv $az_lks $dec_rng $filter1 $1 amp1_tmp.grd=bf
-  conv $idec $jdec $filter2 amp1_tmp.grd=bf amp1.grd
+  $st1 conv $az_lks $dec_rng $filter1 $1 amp1_tmp.grd=bf
+  $st2 conv $idec $jdec $filter2 amp1_tmp.grd=bf amp1.grd
   rm amp1_tmp.grd
-  conv $az_lks $dec_rng $filter1 $2 amp2_tmp.grd=bf
-  conv $idec $jdec $filter2 amp2_tmp.grd=bf amp2.grd
+  $st1 conv $az_lks $dec_rng $filter1 $2 amp2_tmp.grd=bf
+  $st2 conv $idec $jdec $filter2 amp2_tmp.grd=bf amp2.grd
   rm amp2_tmp.grd
 #
 # filter the real and imaginary parts of the interferogram
 #
   echo "filtering interferogram..."
-  conv $az_lks $dec_rng $filter1 real.grd=bf real_tmp.grd=bf
-  conv $idec $jdec $filter2 real_tmp.grd=bf realfilt.grd
-  conv $az_lks $dec_rng $filter1 imag.grd=bf imag_tmp.grd=bf
-  conv $idec $jdec $filter2 imag_tmp.grd=bf imagfilt.grd
+  $st1 conv $az_lks $dec_rng $filter1 real.grd=bf real_tmp.grd=bf
+  $st2 conv $idec $jdec $filter2 real_tmp.grd=bf realfilt.grd
+  $st1 conv $az_lks $dec_rng $filter1 imag.grd=bf imag_tmp.grd=bf
+  $st2 conv $idec $jdec $filter2 imag_tmp.grd=bf imagfilt.grd
 #
 # also compute gradients and filter them the same way
 #
@@ -141,13 +158,13 @@ errormessage:
     echo "filtering for phase gradient . . "
     conv 1 1 $filter4 real_tmp.grd xt.grd=bf
     conv 1 1 $filter5 real_tmp.grd yt.grd=bf
-    conv $idec $jdec $filter2 xt.grd=bf xreal.grd
-    conv $idec $jdec $filter2 yt.grd=bf yreal.grd
+    $st2 conv $idec $jdec $filter2 xt.grd=bf xreal.grd
+    $st2 conv $idec $jdec $filter2 yt.grd=bf yreal.grd
     rm xt.grd yt.grd
     conv 1 1 $filter4 imag_tmp.grd xt.grd=bf
     conv 1 1 $filter5 imag_tmp.grd yt.grd=bf
-    conv $idec $jdec $filter2 xt.grd=bf ximag.grd
-    conv $idec $jdec $filter2 yt.grd=bf yimag.grd
+    $st2 conv $idec $jdec $filter2 xt.grd=bf ximag.grd
+    $st2 conv $idec $jdec $filter2 yt.grd=bf yimag.grd
     rm xt.grd yt.grd
   endif
 

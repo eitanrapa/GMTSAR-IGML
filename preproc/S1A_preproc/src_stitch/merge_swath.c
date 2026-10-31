@@ -147,6 +147,21 @@ int main(int argc, char **argv) {
 			return EXIT_FAILURE;
 	}
 
+	/* IGML 2026-10-29: a subswath grid that starts at (y_min, x_min) [lines, samples] covers its PRM's geometry
+	   from there: put that into near_range / clock_start, so the whole-cell placement below is exact */
+	{
+		double drr = c_speed / prm1.fs / 2.0;
+		struct GMT_GRID *GG[3] = {G1, G2, G3};
+		struct PRM *PP[3] = {&prm1, &prm2, &prm3};
+		int q;
+		for (q = 0; q < nfile; q++) {
+			PP[q]->near_range += GG[q]->header->wesn[GMT_XLO] * drr;
+			PP[q]->clock_start += GG[q]->header->wesn[GMT_YLO] / prm1.prf / 86400.0;
+			PP[q]->SC_clock_start += GG[q]->header->wesn[GMT_YLO] / prm1.prf / 86400.0;
+			printf("IGML merge_swath: grid %d origin x %g y %g\n", q + 1, GG[q]->header->wesn[GMT_XLO], GG[q]->header->wesn[GMT_YLO]);
+		}
+	}
+
 	/* compute coefficients neede for merging*/
 	incx = (G1->header->inc[GMT_X] + G2->header->inc[GMT_X]) / 2;
 	incy = (G1->header->inc[GMT_Y] + G2->header->inc[GMT_Y]) / 2;
@@ -175,6 +190,11 @@ int main(int argc, char **argv) {
 	inc[GMT_Y] = incy;
 
 	ovl12 = G1->header->n_columns - (int)round((prm2.near_range - prm1.near_range) / (c_speed / prm1.fs / 2) / incx);
+	printf("IGML merge_swath: F2 offset %.4f columns, %.4f rows\n", (prm2.near_range - prm1.near_range) / (c_speed / prm1.fs / 2) / incx,
+	       (prm2.clock_start - prm1.clock_start) * 86400.0 * prm1.prf / incy);
+	if (nfile == 3)
+		printf("IGML merge_swath: F3 offset %.4f columns, %.4f rows\n", (prm3.near_range - prm1.near_range) / (c_speed / prm1.fs / 2) / incx,
+		       (prm3.clock_start - prm1.clock_start) * 86400.0 * prm1.prf / incy);
 	if (nfile == 3)
 		ovl23 = G2->header->n_columns - (int)round((prm3.near_range - prm2.near_range) / (c_speed / prm1.fs / 2) / incx);
 
@@ -257,7 +277,7 @@ int main(int argc, char **argv) {
 		for (ii = head2; ii < G2->header->n_rows + head2; ii++) {
 			for (jj = G1->header->n_columns - (ovl12 - n1); jj < G1->header->n_columns + G2->header->n_columns - ovl12 - 1 - (ovl23 - n2); jj++) {
 				kk = ii * GOUT->header->n_columns + jj;
-				k = (ii - head2) * G2->header->n_columns + jj - G1->header->n_columns + ovl12 - 1;
+				k = (ii - head2) * G2->header->n_columns + jj - G1->header->n_columns + ovl12; /* IGML M1: no - 1 */
 				GOUT->data[kk] = G2->data[k];
 			}
 		}
