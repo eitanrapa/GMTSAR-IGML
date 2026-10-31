@@ -28,7 +28,10 @@ char *USAGE = "\nUsage: assemble_tops azi_1 azi_2 name_stem1 name_stem2 ... outp
               "set them to 0s to output all bursts\n";
 
 int edit_tree(int, int, struct tree **, int, int, int *, int *);
-int assemble_tifs(TIFF **, TIFF *, int, int, int, int);
+int assemble_tifs(TIFF **, TIFF *, int, int, int, int, int *, int *);
+int fix_burst_list(struct tree *, char *, int, int, char *);
+double utc_seconds(char *);
+extern char STR[4000][60000];
 
 int main(int argc, char **argv) {
 
@@ -38,7 +41,8 @@ int main(int argc, char **argv) {
 	char tmp_str[2000];
 	struct tree **xml_tree;
 	float azi_1, azi_2;
-	int nb_start, nb_end, lpb;
+	int nb_start, nb_end, lpb, *lpb_f, *nb_f, lpb_out, mixed, anx_step, g, k, jj;
+	double *epoch_f, d_epoch;
 
 	if (argc < 5) {
 		fprintf(stderr, "%s", USAGE);
@@ -103,9 +107,77 @@ int main(int argc, char **argv) {
 		fclose(XML_FILE);
 	}
 
+	/* IGML 2026-10-29: each file's linesPerBurst and burst count; if they differ, every burst is cut to the
+	   smallest (here the merged linesPerBurst, so edit_tree's numberOfLines follows) */
+	lpb_f = (int *)malloc(nfiles * sizeof(int));
+	nb_f = (int *)malloc(nfiles * sizeof(int));
+	for (ii = 0; ii < nfiles; ii++) {
+		search_tree(xml_tree[ii], "/product/swathTiming/linesPerBurst/", tmp_str, 1, 0, 1);
+		lpb_f[ii] = (int)str2double(tmp_str);
+		search_tree(xml_tree[ii], "/product/swathTiming/burstList/", tmp_str, 3, 0, 1);
+		nb_f[ii] = (int)str2double(tmp_str);
+	}
+	/* IGML 2026-10-29: and each file's ANX epoch (first burst's azimuthTime - azimuthAnxTime). The scenes of one
+	   datatake can differ by a fraction of a ms (T173 2014-12-04 +0.355, T144 2016-06-30 +0.444); make_s1a_tops
+	   places bursts by azimuthAnxTime and truncates (int(x + 0.1)), so a later scene's bursts sat a line early.
+	   Their azimuthAnxTime is moved onto file 0's epoch below: bursts placed by their absolute times. */
+	epoch_f = (double *)malloc(nfiles * sizeof(double));
+	anx_step = 0;
+	for (ii = 0; ii < nfiles; ii++) {
+		search_tree(xml_tree[ii], "/product/swathTiming/burstList/burst/azimuthTime/", tmp_str, 1, 4, 1);
+		epoch_f[ii] = utc_seconds(tmp_str);
+		search_tree(xml_tree[ii], "/product/swathTiming/burstList/burst/azimuthAnxTime/", tmp_str, 1, 4, 1);
+		epoch_f[ii] -= str2double(tmp_str);
+		if (fabs(epoch_f[ii] - epoch_f[0]) > 1e-6)
+			anx_step = 1;
+	}
+	lpb_out = lpb_f[0];
+	mixed = 0;
+	for (ii = 1; ii < nfiles; ii++) {
+		if (lpb_f[ii] != lpb_f[0])
+			mixed = 1;
+		if (lpb_f[ii] < lpb_out)
+			lpb_out = lpb_f[ii];
+	}
+	if (mixed) {
+		printf("IGML: linesPerBurst differs between the files (");
+		for (ii = 0; ii < nfiles; ii++)
+			printf(" %d", lpb_f[ii]);
+		printf(" ): every burst cut to %d lines\n", lpb_out);
+		ii = search_tree(xml_tree[0], "/product/swathTiming/linesPerBurst/", tmp_str, 1, 0, 1);
+		sprintf(tmp_str, "%d", lpb_out);
+		strcpy(xml_tree[0][xml_tree[0][ii].firstchild].name, tmp_str);
+	}
+
 	// modify xml_tree[0] to get parameters from other xml_trees
 	edit_tree(nfiles, nlmx, xml_tree, (int)azi_1, (int)azi_2, &nb_start, &nb_end);
 	printf("Output burst from #%d to #%d ...\n", nb_start, nb_end);
+	if (mixed)
+		for (ii = 1; ii <= nb_end - nb_start + 1; ii++) {
+			fix_burst_list(xml_tree[0], "/product/swathTiming/burstList/burst/firstValidSample/", ii, lpb_out,
+			               "firstValidSample");
+			fix_burst_list(xml_tree[0], "/product/swathTiming/burstList/burst/lastValidSample/", ii, lpb_out,
+			               "lastValidSample");
+		}
+	if (anx_step) {
+		printf("IGML: ANX epoch differs between the files (ms vs file 0:");
+		for (ii = 0; ii < nfiles; ii++)
+			printf(" %+.3f", (epoch_f[ii] - epoch_f[0]) * 1e3);
+		printf(" ): azimuthAnxTime of the later files' bursts moved onto file 0's epoch\n");
+		g = 0;
+		for (ii = 0; ii < nfiles; ii++)
+			for (k = 0; k < nb_f[ii]; k++) {
+				g++;
+				d_epoch = epoch_f[ii] - epoch_f[0];
+				if (g < nb_start || g > nb_end || fabs(d_epoch) <= 1e-6)
+					continue;
+				jj = search_tree(xml_tree[0], "/product/swathTiming/burstList/burst/azimuthAnxTime/", tmp_str, 1,
+				                 4, g - nb_start + 1);
+				sprintf(tmp_str, "%.15e", str2double(tmp_str) + d_epoch);
+				strcpy(xml_tree[0][xml_tree[0][jj].firstchild].name, tmp_str);
+			}
+	}
+	free(epoch_f);
 
 	strcpy(tmp_str, argv[argc - 1]);
 	strcat(tmp_str, ".xml");
@@ -131,7 +203,9 @@ int main(int argc, char **argv) {
 	search_tree(xml_tree[0], "/product/swathTiming/linesPerBurst/", tmp_str, 1, 0, 1);
 	lpb = (int)str2double(tmp_str);
 
-	assemble_tifs(tif, tif_out, nfiles, nb_start, nb_end, lpb);
+	assemble_tifs(tif, tif_out, nfiles, nb_start, nb_end, lpb, mixed ? lpb_f : NULL, nb_f);
+	free(lpb_f);
+	free(nb_f);
 
 	for (ii = 0; ii < nfiles; ii++)
 		TIFFClose(tif[ii]);
@@ -144,9 +218,9 @@ int main(int argc, char **argv) {
 	return (1);
 }
 
-int assemble_tifs(TIFF **tif, TIFF *tif_out, int nfiles, int nb_start, int nb_end, int lpb) {
+int assemble_tifs(TIFF **tif, TIFF *tif_out, int nfiles, int nb_start, int nb_end, int lpb, int *lpb_f, int *nb_f) {
 
-	int ii, jj;
+	int ii, jj, jb, g;
 	uint32_t width, *height, height_all, ni = 0, nii, ni2 = 0;
 	short *buf;
 	uint16_t s = 0;
@@ -170,6 +244,28 @@ int assemble_tifs(TIFF **tif, TIFF *tif_out, int nfiles, int nb_start, int nb_en
 	buf = (short *)_TIFFmalloc(TIFFScanlineSize(tif_out) * 2); // make some extra space in case the width differ for other images
 
 	printf("Writing TIFF image Width(%d) X Height(%d)...\n", width, (nb_end - nb_start + 1) * lpb);
+
+	/* IGML 2026-10-29: files of different linesPerBurst -- burst g of the merged list from its own file, at that
+	   file's burst length, its first lpb lines */
+	if (lpb_f != NULL) {
+		g = 0;
+		for (ii = 0; ii < nfiles; ii++)
+			for (jb = 0; jb < nb_f[ii]; jb++) {
+				g++;
+				if (g < nb_start || g > nb_end)
+					continue;
+				for (jj = 0; jj < lpb; jj++) {
+					nii = jb * lpb_f[ii] + jj;
+					TIFFReadScanline(tif[ii], buf, nii, s);
+					if (TIFFFlushData(tif_out))
+						TIFFWriteScanline(tif_out, buf, ni2, s);
+					ni2++;
+				}
+			}
+		_TIFFfree(buf);
+		free(height);
+		return (1);
+	}
 
 	for (ii = 0; ii < nfiles; ii++) {
 		for (jj = 0; jj < height[ii]; jj++) {
@@ -468,5 +564,56 @@ int edit_tree(int nfiles, int nlmx, struct tree **T, int azi_1, int azi_2, int *
 		*nb_end = ct;
 	}
 
+	return (1);
+}
+
+double utc_seconds(char *str) {
+	/* IGML 2026-10-29: "YYYY-MM-DDTHH:MM:SS.ffffff" -> seconds since 1970-01-01 (days from the civil date) */
+	int y, m, d, hh, mm;
+	double ss;
+	long era, yoe, doy, doe, days;
+	sscanf(str, "%d-%d-%dT%d:%d:%lf", &y, &m, &d, &hh, &mm, &ss);
+	y -= m <= 2;
+	era = (y >= 0 ? y : y - 399) / 400;
+	yoe = y - era * 400;
+	doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+	doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+	days = era * 146097 + doe - 719468;
+	return days * 86400.0 + hh * 3600.0 + mm * 60.0 + ss;
+}
+int fix_burst_list(struct tree *T, char *path, int num, int lpb, char *term) {
+	/* IGML 2026-10-29: keep the first lpb entries of burst num's valid-sample list (and its count) */
+	char tmp_c[60000], tmp_num[200];
+	int ii, k, n, in_word;
+
+	ii = search_tree(T, path, tmp_c, 1, 4, num);
+	if (ii < 0)
+		return (-1);
+	n = 0;
+	in_word = 0;
+	for (k = 0; tmp_c[k] != '\0'; k++) {
+		if (tmp_c[k] != ' ' && !in_word) {
+			if (n == lpb) {
+				break;
+			}
+			n++;
+			in_word = 1;
+		}
+		else if (tmp_c[k] == ' ')
+			in_word = 0;
+	}
+	if (tmp_c[k] == '\0')
+		return (0); /* lpb entries or fewer: nothing to cut */
+	while (k > 0 && tmp_c[k - 1] == ' ')
+		k--;
+	tmp_c[k] = '\0';
+	if (strncmp(T[T[ii].firstchild].name, "OutOfSpace", 10) == 0) {
+		cat_nums(tmp_num, T[T[ii].firstchild].name);
+		strcpy(STR[(int)str2double(tmp_num)], tmp_c);
+	}
+	else
+		strcpy(T[T[ii].firstchild].name, tmp_c);
+	sprintf(tmp_c, "%s count=\"%d\"", term, lpb);
+	strcpy(T[ii].name, tmp_c);
 	return (1);
 }
