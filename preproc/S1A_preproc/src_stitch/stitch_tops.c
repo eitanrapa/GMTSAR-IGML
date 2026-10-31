@@ -251,10 +251,8 @@ int main(int argc, char **argv) {
         n_start = n_start - line_offset_total;
     }
     
-    if (line_offset!= 0) {
-        //printf("Need to shift lines by %d\n",line_offset);
-        n_start = n_start - line_offset;
-    }
+    /* IGML 2026-10-28: line_offset is already in line_offset_total, applied just above; subtracting it again
+       placed the last image |line_offset| lines off whenever the overlap cross-correlation found a shift. */
 	/* writing the last SLC */
 	fprintf(stderr, "Parsing %d lines...\n", n_start);
 	for (jj = 1; jj <= n_start; jj++)
