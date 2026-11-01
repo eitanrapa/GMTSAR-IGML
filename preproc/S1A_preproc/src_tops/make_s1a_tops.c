@@ -43,6 +43,8 @@
 
 /* IGML A1 (2026-10-30): the output stem, for <stem>.cuts */
 char IGML_STEM[256] = "";
+/* IGML A6 (2026-11-01): the burst cycle (lines) mode 2's spec_sep was taken over (0: GMTSAR's, a whole burst) */
+double IGML_CYCLE = 0.0;
 /* IGML A3 (2026-10-31): the width a resampled date is written at, when wider than its tiff (else 0) */
 int IGML_W = 0;
 
@@ -61,6 +63,7 @@ int pop_led(struct tree *, struct state_vector *);
 int write_orb(struct state_vector *sv, FILE *fp, int);
 int pop_burst(struct PRM *, struct tree *, struct burst_bounds *, char *, char *);
 void igml_a1_snap(struct burst_bounds *, int, int *, int *);
+double igml_burst_cycle(struct tree *, int, double); /* IGML A6 */
 double dramp_dmod(struct tree *, int, fcomplex *, int, int, int, struct GMT_GRID *, struct GMT_GRID *, int, int);
 double shift_write_slc(void *, struct PRM *, struct tree *, burst_bounds *, int, TIFF *, FILE *, FILE *, FILE *, FILE *, char *, char *);
 int shift_burst(fcomplex *, fcomplex *, int, int, int, struct GMT_GRID *, struct GMT_GRID *, int);
@@ -218,8 +221,12 @@ int main(int argc, char **argv) {
 		search_tree(xml_tree, "/product/imageAnnotation/imageInformation/azimuthTimeInterval/", tmp_str, 1, 0, 1);
 		dta = str2double(tmp_str);
 		search_tree(xml_tree, "/product/imageAnnotation/imageInformation/numberOfSamples/", tmp_str, 1, 0, 1);
-		fprintf(BB, "%d %d %.6f %.12f\n", nc,
-		        IGML_W > 0 ? IGML_W : (int)str2double(tmp_str) - (int)str2double(tmp_str) % 4, spec_sep, dta); /* IGML A3 */
+		if (IGML_CYCLE > 0.0) /* IGML A6: spec_sep is over this burst cycle (lines), the header's fifth number */
+			fprintf(BB, "%d %d %.6f %.12f %.3f\n", nc,
+			        IGML_W > 0 ? IGML_W : (int)str2double(tmp_str) - (int)str2double(tmp_str) % 4, spec_sep, dta, IGML_CYCLE);
+		else
+			fprintf(BB, "%d %d %.6f %.12f\n", nc,
+			        IGML_W > 0 ? IGML_W : (int)str2double(tmp_str) - (int)str2double(tmp_str) % 4, spec_sep, dta); /* IGML A3 */
 		for (n = 1; n <= nc; n++) {
 			fprintf(BB, "%d %d %d %d %d %d\n", bb[n].SL, bb[n].SC, bb[n].SH, bb[n].EL, bb[n].EC, bb[n].EH);
 		}
@@ -1038,6 +1045,17 @@ double shift_write_slc(void *API, struct PRM *prm, struct tree *xml_tree, struct
 		search_tree(xml_tree, "/product/imageAnnotation/imageInformation/azimuthTimeInterval/", tmp_c, 1, 0, 1);
 		dta = str2double(tmp_c);
 		spec_sep = spec_sep * dta / count / width;
+		/* IGML A6 (2026-11-01): the two looks of a target are one burst CYCLE apart, not lpb lines: spec_sep over the
+		   cycle (every ESD shift was cycle / lpb too small, T166 F1 -10.3 %) */
+		{
+			double cyc = igml_burst_cycle(xml_tree, count, dta);
+			if (cyc > 0.5 * (double)lpb && cyc < (double)lpb) {
+				spec_sep = spec_sep * cyc / (double)lpb;
+				IGML_CYCLE = cyc;
+			}
+			else
+				fprintf(stderr, "IGML A6: burst cycle %.1f lines not usable (lpb %d): spec_sep over the whole burst\n", cyc, lpb);
+		}
 	}
 
 	fprintf(stderr, "number of points clipped to short int %d \n", nclip);
@@ -1485,4 +1503,24 @@ void igml_a1_snap(struct burst_bounds *bb, int count, int *c_own, int *o_start) 
 			fprintf(stderr, "IGML A1: cut %d kept at line %d (nearest super-master cut %+.1f lines, room %d)\n", k,
 			        c_own[k], bd, room);
 	}
+}
+
+/* IGML A6 (2026-11-01): the burst cycle in lines -- consecutive bursts' azimuthTime (GMTSAR's yyyyddd.fraction days)
+   over azimuthTimeInterval, averaged; 0 with fewer than two bursts. Spectral diversity's Doppler separation is the
+   Doppler rate times this interval, the time between a target's two looks. */
+double igml_burst_cycle(struct tree *xml_tree, int count, double dta) {
+	char tmp_c[1024];
+	double t1, t2, cyc = 0.0;
+	int kk;
+
+	if (count < 2 || dta <= 0.0)
+		return 0.0;
+	for (kk = 1; kk < count; kk++) {
+		search_tree(xml_tree, "/product/swathTiming/burstList/burst/azimuthTime/", tmp_c, 2, 4, kk);
+		t1 = str2double(tmp_c);
+		search_tree(xml_tree, "/product/swathTiming/burstList/burst/azimuthTime/", tmp_c, 2, 4, kk + 1);
+		t2 = str2double(tmp_c);
+		cyc += (t2 - t1) * 86400.0 / dta;
+	}
+	return cyc / (double)(count - 1);
 }
