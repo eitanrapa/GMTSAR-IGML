@@ -137,12 +137,34 @@ errormessage:
 # filter the two amplitude images
 #
   echo "making amplitudes..."
-  $st1 conv $az_lks $dec_rng $filter1 $1 amp1_tmp.grd=bf
-  $st2 conv $idec $jdec $filter2 amp1_tmp.grd=bf amp1.grd
-  rm amp1_tmp.grd
-  $st1 conv $az_lks $dec_rng $filter1 $2 amp2_tmp.grd=bf
-  $st2 conv $idec $jdec $filter2 amp2_tmp.grd=bf amp2.grd
-  rm amp2_tmp.grd
+  # IGML 2026-11-02: with IGML_AMP_CACHE, the reference's decimated amplitude (amp1) is computed once per date and
+  # setup and copied for its other pairs (key: the SLC's name, inode, mtime, size and every setting the result depends
+  # on, filter2 by its md5 -- filter2 comes from the reference PRM, so amp2 depends on its partner and is not cached)
+  foreach k (1 2)
+    set prm = $argv[$k]
+    set amp = "amp${k}.grd"
+    set key = ""
+    if ($?IGML_AMP_CACHE && $k == 1) then
+      set slc = `grep "^SLC_file" $prm | awk '{print $3}'`
+      set sid = `stat -L -c "%i_%Y_%s" $slc`
+      set fmd = `md5sum $filter2 | cut -c1-16`
+      if ("$sid" != "" && "$fmd" != "") then
+        set key = "$IGML_AMP_CACHE/$slc:t:r_${sid}_${az_lks}_${dec_rng}_${idec}_${jdec}_$filter1:t_${fmd}_${igx0}_${igy0}.grd"
+      endif
+    endif
+    if ("$key" != "" && -e "$key") then
+      cp "$key" $amp
+      echo "IGML filter.csh: $amp from the amplitude cache ($key:t)"
+    else
+      $st1 conv $az_lks $dec_rng $filter1 $prm amp${k}_tmp.grd=bf
+      $st2 conv $idec $jdec $filter2 amp${k}_tmp.grd=bf $amp
+      rm amp${k}_tmp.grd
+      if ("$key" != "") then
+        mkdir -p $IGML_AMP_CACHE
+        cp $amp "$key.$$" && mv "$key.$$" "$key"
+      endif
+    endif
+  end
 #
 # filter the real and imaginary parts of the interferogram
 #
