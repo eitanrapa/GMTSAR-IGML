@@ -1,0 +1,10 @@
+#!/bin/bash
+# IGML 2026-10-28: called by preproc_batch_tops.csh (cwd = its work folder, data.in there). The super-master (the first
+# line of data.in) is stitched by the lab's stitch_tops, so it stays bit-identical to the lab's; every other date by
+# our patched copy (../bin/stitch_tops: the last frame's cross-correlation line offset applied once, not twice).
+master=$(awk -F: 'NR==1 {print $1}' data.in 2>/dev/null | awk '{print "S1_"substr($1,16,8)"_ALL_F"substr($1,7,1)}')
+if [ -n "$master" ] && [ "$2" != "$master" ]; then
+  echo "stitch_tops: IGML patched copy for $2"
+  exec /zdata/datasets/IGML/gmtsar_fix/bin/stitch_tops "$@"
+fi
+exec /usr/local/GMTSAR/bin/stitch_tops "$@"
